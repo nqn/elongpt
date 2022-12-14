@@ -148,7 +148,7 @@ class MosaicGPT(nn.Module):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(cfg.vocab_size, cfg.d_model,
-                                 device=cfg.device),
+                                 device='cpu'), # Force device='cpu' to avoid bug with device='meta' + weight-tying
                 wpe=nn.Embedding(cfg.max_seq_len,
                                  cfg.d_model,
                                  device=cfg.device),
@@ -162,7 +162,7 @@ class MosaicGPT(nn.Module):
         self.lm_head = nn.Linear(cfg.d_model,
                                  cfg.vocab_size,
                                  bias=False,
-                                 device=cfg.device)
+                                 device='cpu')  # Force device='cpu' to avoid bug with device='meta' + weight-tying
 
         # Apply weight tying
         # Ensures that wte and lm_head are in the same FSDP block
