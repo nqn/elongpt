@@ -16,6 +16,13 @@ from omegaconf import OmegaConf as om
 from src.text_data import build_text_dataloader
 from src.model_registry import COMPOSER_MODEL_REGISTRY
 from src.speed_monitor_w_mfu import SpeedMonitorMFU
+from src.optim import OPEStepAdam
+
+
+OPTIMIZERS = {
+    "decoupled_adamw": DecoupledAdamW, 
+    "ope_step_adam": OPEStepAdam
+}
 
 
 def build_logger(name, kwargs):
@@ -49,13 +56,15 @@ def build_algorithm(name, kwargs):
         raise ValueError(f'Not sure how to build algorithm: {name}')
 
 
-def build_optimizer(cfg, model):
-    if cfg.name == 'decoupled_adamw':
-        return DecoupledAdamW(model.parameters(),
-                              lr=cfg.lr,
-                              betas=cfg.betas,
-                              eps=cfg.eps,
-                              weight_decay=cfg.weight_decay)
+def build_optimizer(cfg, model):    
+    if cfg.name in OPTIMIZERS:
+        optimizer_args = {
+            "params": model.parameters(),
+        }
+        addl_args = dict(cfg)
+        del addl_args['name']
+        optimizer_args.update(addl_args)
+        return OPTIMIZERS[cfg.name](**optimizer_args)
     else:
         raise ValueError(f'Not sure how to build optimizer: {cfg.name}')
 
@@ -161,6 +170,9 @@ def main(cfg):
     print(f'{cfg.n_params=:.2e}')
     if hasattr(model, 'num_fwd_flops'):
         print(f'{model.num_fwd_flops=:.2e}')
+    
+    # Optimizer
+    optimizer = build_optimizer(cfg.optimizer, model)
 
     # Dataloaders
     print('Building train loader...')
@@ -169,9 +181,7 @@ def main(cfg):
     print('Building eval loader...')
     eval_loader = build_dataloader(cfg.eval_loader, cfg.device_eval_batch_size)
 
-    # Optimizer
-    optimizer = build_optimizer(cfg.optimizer, model)
-
+   
     # Scheduler
     scheduler = build_scheduler(cfg.scheduler)
 
