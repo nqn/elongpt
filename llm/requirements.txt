@@ -1,12 +1,8 @@
 torchvision==0.14.0
 torchtext==0.14.0
 torch==1.13.0
-<<<<<<< HEAD
 mosaicml==0.12.0
-=======
->>>>>>> 18f7680 (add optimization logger req)
 mosaicml-streaming==0.1.2
-mosaicml @ git+https://github.com/bmosaicml/composer.git@feature/optimization_logger
 flash-attn==0.2.2
 transformers==4.24.0
 datasets==2.7.1
