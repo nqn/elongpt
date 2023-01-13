@@ -2,15 +2,36 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """C4 streaming dataset conversion scripts."""
+import gzip
+import json
 import os
 import platform
 from argparse import ArgumentParser, Namespace
 from typing import Dict, Iterable
 
-import datasets as hf_datasets
+import requests
 from streaming import MDSWriter
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from tqdm import tqdm
+
+_N_SHARDS_PER_SPLIT = {
+    'en': {
+        'train': 1024,
+        'validation': 8
+    },
+    'realnewslike': {
+        'train': 512,
+        'validation': 1
+    },
+    'en.noblocklist': {
+        'train': 1024,
+        'validation': 8
+    },
+    'en.noclean': {
+        'train': 7168,
+        'validation': 64
+    },
+}
 
 
 def parse_args() -> Namespace:
@@ -25,41 +46,40 @@ def parse_args() -> Namespace:
     return args.parse_args()
 
 
-def build_hf_c4_dataset(split: str) -> IterableDataset:
-    """Collect the samples for this dataset split.
+def get_allenai_c4_samples(name, split, shard, n_shards):
+    url = f'https://huggingface.co/datasets/allenai/c4/resolve/1ddc917116b730e1859edef32896ec5c16be51d0/{name}/c4-{split}.{shard:05d}-of-{n_shards:05d}.json.gz'
+    print(url)
+    data = gzip.decompress(requests.get(url).content).decode('utf-8').strip()
 
-    Args:
-        split (str): Split name.
+    samples = []
+    for line in data.split('\n'):
+        samples.append(json.loads(line))
+    return samples
 
-    Returns:
-        An IterableDataset.
-    """
 
-    class ShardedC4(IterableDataset):
+class ShardedC4(IterableDataset):
 
-        def __init__(self):
-            self.dataset = hf_datasets.load_dataset(path='c4',
-                                                    name='en',
-                                                    split=split,
-                                                    streaming=True)
+    def __init__(self, name, split):
+        self.name = name
+        self.split = split
+        self.n_shards = _N_SHARDS_PER_SPLIT[self.name][self.split]
 
-        def num_shards(self):
-            it = self.dataset._ex_iterable  # type: ignore
-            return len(it.kwargs['filepaths'])  # type: ignore
+    def __iter__(self):
+        worker_info = get_worker_info()
+        if worker_info:
+            num_workers = worker_info.num_workers
+            worker_id = worker_info.id
+            assert self.n_shards % num_workers == 0
+        else:
+            num_workers = 1
+            worker_id = 0
 
-        def __iter__(self):
-            worker_info = get_worker_info()
-            if worker_info:
-                num_workers = worker_info.num_workers
-                worker_id = worker_info.id
-                it = self.dataset._ex_iterable  # type: ignore
-                shards = it.kwargs['filepaths']  # type: ignore
-                assert len(shards) % num_workers == 0
-                it.kwargs['filepaths'] = shards[  # type: ignore
-                    worker_id::num_workers]
-            return iter(self.dataset)
-
-    return ShardedC4()
+        worker_shards = list(range(self.n_shards))[worker_id::num_workers]
+        for shard in worker_shards:
+            shard_samples = get_allenai_c4_samples(self.name, self.split, shard,
+                                                   self.n_shards)
+            for sample in shard_samples:
+                yield sample
 
 
 def generate_samples(dataset: IterableDataset,
@@ -74,9 +94,10 @@ def generate_samples(dataset: IterableDataset,
     """
     # Multiple workers is only supported on linux machines
     if 'linux' in platform.platform().lower():
-        num_workers = min(64, dataset.num_shards())  # type: ignore
+        num_workers = min(64, dataset.n_shards)  # type: ignore
     else:
         num_workers = 0
+
     batch_size = 512
     # If using multiple workers, configure each worker to prefetch as many samples as it can, up to the aggregate device batch size
     # If not using workers, the torch DataLoader expects the default value for prefetch_factor, which non-intuitively must be 2.
@@ -123,7 +144,7 @@ def main(args: Namespace) -> None:
             continue
 
         # Get samples
-        dataset = build_hf_c4_dataset(split=split)
+        dataset = ShardedC4(name='en', split=split)
         samples = generate_samples(dataset=dataset,
                                    expected_num_samples=expected_num_samples)
 
